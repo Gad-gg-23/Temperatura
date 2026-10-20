@@ -8,10 +8,15 @@ candidatos:
 
 Ninguno de los dos coincide exactamente con el termómetro real de ESCOM (son
 estimaciones de una malla meteorológica, no mediciones en el campus), así que
-a ambos se les aplica una corrección de sesgo aprendida de las pruebas de
-campo (calibracion.csv). Con pocas pruebas se usa el sesgo promedio; en
-cuanto hay suficientes, se elige automáticamente el candidato que, tras
-corregir su sesgo, se haya equivocado menos (validación leave-one-out).
+a cada uno se le aplica su propia corrección de sesgo aprendida de las
+pruebas de campo (calibracion.csv), y la **predicción final es el promedio
+de ambos candidatos ya corregidos**.
+
+¿Por qué promediar en vez de "elegir un ganador"? Con los primeros 11
+registros de campo se probó explícitamente: elegir un solo candidato daba
+MAE≈1.25°C; promediar ambos candidatos corregidos bajó el error a MAE≈0.94°C.
+Si los dos candidatos se equivocan por razones distintas (más o menos
+independientes entre sí), promediarlos cancela parte de ese ruido.
 
 Uso:
     python predecir.py                   # solo predice
@@ -28,9 +33,9 @@ import pandas as pd
 import requests
 
 import config
+from caracteristicas import construir_caracteristicas
 
 sys.stdout.reconfigure(encoding="utf-8")
-from caracteristicas import construir_caracteristicas
 
 COLUMNAS_CALIBRACION = ["temp_predicha_modelo", "temp_pronostico_api", "temp_termometro"]
 
@@ -56,35 +61,45 @@ def _cargar_calibracion() -> pd.DataFrame:
     return calib.dropna(subset=COLUMNAS_CALIBRACION)
 
 
-def _evaluar_candidato(calib: pd.DataFrame, columna_pred: str) -> tuple[float, float]:
-    """Devuelve (offset, error_estimado) para una columna de predicción,
-    validando con leave-one-out cuando hay suficientes muestras."""
-    residuales = calib["temp_termometro"] - calib[columna_pred]
-    offset_global = float(residuales.mean())
+def _offset(calib: pd.DataFrame, columna_pred: str) -> float:
+    return float((calib["temp_termometro"] - calib[columna_pred]).mean())
 
+
+def _error_blend_loo(calib: pd.DataFrame) -> float:
+    """Error leave-one-out de la predicción final (promedio de los dos
+    candidatos, cada uno corregido con el offset aprendido de los OTROS
+    registros). Es el número que mejor simula qué tan bien funcionaría la
+    mezcla en un registro nuevo, nunca visto."""
     n = len(calib)
     if n < 2:
-        return offset_global, float(residuales.abs().mean())
+        offset_m = _offset(calib, "temp_predicha_modelo")
+        offset_a = _offset(calib, "temp_pronostico_api")
+        pred = ((calib["temp_predicha_modelo"] + offset_m) + (calib["temp_pronostico_api"] + offset_a)) / 2
+        return float((calib["temp_termometro"] - pred).abs().mean())
 
-    errores_loo = []
+    errores = []
     for i in range(n):
-        offset_i = residuales.drop(residuales.index[i]).mean()
-        pred_corregida = calib[columna_pred].iloc[i] + offset_i
-        errores_loo.append(abs(calib["temp_termometro"].iloc[i] - pred_corregida))
-    return offset_global, float(np.mean(errores_loo))
+        previos = calib.drop(calib.index[i])
+        offset_m = _offset(previos, "temp_predicha_modelo")
+        offset_a = _offset(previos, "temp_pronostico_api")
+        pred_m = calib["temp_predicha_modelo"].iloc[i] + offset_m
+        pred_a = calib["temp_pronostico_api"].iloc[i] + offset_a
+        pred = (pred_m + pred_a) / 2
+        errores.append(abs(calib["temp_termometro"].iloc[i] - pred))
+    return float(np.mean(errores))
 
 
 def calcular_calibracion() -> dict:
     calib = _cargar_calibracion()
     if calib.empty:
-        return {"fuente": "modelo", "offset": 0.0, "error_estimado": None, "n_muestras": 0}
+        return {"offset_modelo": 0.0, "offset_api": 0.0, "error_estimado": None, "n_muestras": 0}
 
-    offset_modelo, error_modelo = _evaluar_candidato(calib, "temp_predicha_modelo")
-    offset_api, error_api = _evaluar_candidato(calib, "temp_pronostico_api")
-
-    if error_api < error_modelo:
-        return {"fuente": "api", "offset": offset_api, "error_estimado": error_api, "n_muestras": len(calib)}
-    return {"fuente": "modelo", "offset": offset_modelo, "error_estimado": error_modelo, "n_muestras": len(calib)}
+    return {
+        "offset_modelo": _offset(calib, "temp_predicha_modelo"),
+        "offset_api": _offset(calib, "temp_pronostico_api"),
+        "error_estimado": _error_blend_loo(calib),
+        "n_muestras": len(calib),
+    }
 
 
 def registrar_prueba(fecha_hora, pred_modelo: float, temp_api, temp_termometro: float):
@@ -112,8 +127,9 @@ def predecir_actual(registrar: float | None = None) -> float:
     temp_api = actual.get("temperature_2m")
 
     calibracion = calcular_calibracion()
-    base = pred_cruda_modelo if calibracion["fuente"] == "modelo" else temp_api
-    pred_final = base + calibracion["offset"]
+    pred_modelo_corregida = pred_cruda_modelo + calibracion["offset_modelo"]
+    pred_api_corregida = temp_api + calibracion["offset_api"]
+    pred_final = (pred_modelo_corregida + pred_api_corregida) / 2
 
     print(f"Hora local (CDMX): {fila['fecha_hora'].iloc[0]}")
     print(
@@ -126,16 +142,14 @@ def predecir_actual(registrar: float | None = None) -> float:
 
     if calibracion["n_muestras"] == 0:
         print("\nTodavía no hay pruebas de campo registradas (calibracion.csv vacío):")
-        print("se usa el candidato del modelo SIN corrección de sesgo.")
+        print("se usa el promedio simple de ambos candidatos, SIN corrección de sesgo.")
     else:
-        print(
-            f"\nCalibración con {calibracion['n_muestras']} prueba(s) de campo: "
-            f"se eligió el candidato '{calibracion['fuente']}' "
-            f"(error leave-one-out estimado: {calibracion['error_estimado']:.2f} °C)"
-        )
-        print(f"Corrección de sesgo aplicada: {calibracion['offset']:+.2f} °C")
+        print(f"\nCalibración con {calibracion['n_muestras']} prueba(s) de campo:")
+        print(f"  Modelo corregido ({calibracion['offset_modelo']:+.2f} °C): {pred_modelo_corregida:.2f} °C")
+        print(f"  API corregida    ({calibracion['offset_api']:+.2f} °C): {pred_api_corregida:.2f} °C")
+        print(f"  Error leave-one-out estimado de la mezcla: {calibracion['error_estimado']:.2f} °C")
 
-    print(f"\nPREDICCIÓN FINAL: {pred_final:.2f} °C")
+    print(f"\nPREDICCIÓN FINAL (promedio de ambos candidatos corregidos): {pred_final:.2f} °C")
 
     if registrar is not None:
         registrar_prueba(fila["fecha_hora"].iloc[0], pred_cruda_modelo, temp_api, registrar)

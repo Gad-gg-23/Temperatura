@@ -56,8 +56,10 @@ python Temperatura.py predecir --registrar <lectura_del_termometro>
 Esto guarda en `calibracion.csv` tanto la predicción del modelo como el pronóstico crudo de Open-Meteo junto con la lectura real. Con esos datos, `predecir.py`:
 
 1. Calcula el sesgo promedio de cada candidato (modelo vs. API cruda) respecto al termómetro real.
-2. Si hay 2 o más pruebas, valida con *leave-one-out* cuál candidato se equivoca menos después de corregir su sesgo.
-3. Usa ese candidato + corrección como predicción final.
+2. Corrige ambos candidatos con su propio sesgo.
+3. **La predicción final es el promedio de los dos candidatos ya corregidos** (no se elige un solo "ganador").
+
+*Historial de la estrategia:* al principio el script elegía, vía validación leave-one-out, cuál de los dos candidatos se equivocaba menos. Con 11 registros de campo (6–20 oct) se comparó contra simplemente promediar ambos candidatos corregidos: elegir un solo candidato daba MAE≈1.25°C; promediar bajó el error a MAE≈0.94°C. Al promediar, el ruido de cada candidato (que se equivoca por razones distintas) se cancela parcialmente. Se probaron también ventanas deslizantes (usar solo los últimos 3-7 registros en vez de todo el historial) y no mejoraron el resultado.
 
 Mientras más pruebas se acumulen (idealmente en distintos días/condiciones, a la misma hora de la clase), más confiable será la corrección. Esto es exactamente lo planeado: "hacer pruebas para ir ajustando".
 

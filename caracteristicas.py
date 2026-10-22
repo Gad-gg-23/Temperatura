@@ -10,6 +10,11 @@ import pandas as pd
 # pressure_msl/surface_pressure reconstruye casi exactamente temperature_2m
 # (correlación de -0.9997 medida en el histórico). Incluirla sería fuga de
 # información, igual que dew_point_2m o apparent_temperature.
+# precipitation se excluye: con 94 mil registros históricos, su correlación
+# con la temperatura es casi nula (0.018 en todo el día, 0.072 en el horario
+# de clase) y su importancia en el modelo es prácticamente cero (~0.001). En
+# esta época del año casi no llueve en las mañanas, así que la columna es
+# casi puro ceros y solo le agrega ruido al entrenamiento.
 COLUMNAS_MODELO = [
     "relative_humidity_2m",
     "surface_pressure",
@@ -17,7 +22,6 @@ COLUMNAS_MODELO = [
     "wind_speed_10m",
     "wind_gusts_10m",
     "shortwave_radiation",
-    "precipitation",
     "wind_dir_sin",
     "wind_dir_cos",
     "hora_sin",

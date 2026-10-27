@@ -146,7 +146,6 @@ def predecir_actual(registrar: float | None = None) -> float:
     else:
         print(f"\nCalibración con {calibracion['n_muestras']} prueba(s) de campo:")
         print(f"  Modelo corregido ({calibracion['offset_modelo']:+.2f} °C): {pred_modelo_corregida:.2f} °C")
-        print(f"  API corregida    ({calibracion['offset_api']:+.2f} °C): {pred_api_corregida:.2f} °C")
         print(f"  Error leave-one-out estimado de la mezcla: {calibracion['error_estimado']:.2f} °C")
 
     print(f"\nPREDICCIÓN FINAL (promedio de ambos candidatos corregidos): {pred_final:.2f} °C")

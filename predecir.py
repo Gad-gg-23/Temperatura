@@ -74,7 +74,7 @@ def _error_blend_loo(calib: pd.DataFrame) -> float:
     if n < 2:
         offset_m = _offset(calib, "temp_predicha_modelo")
         offset_a = _offset(calib, "temp_pronostico_api")
-        pred = ((calib["temp_predicha_modelo"] + offset_m) + (calib["temp_pronostico_api"] + offset_a)) / 2
+        pred = (1 - config.PESO_API) * (calib["temp_predicha_modelo"] + offset_m) + config.PESO_API * (calib["temp_pronostico_api"] + offset_a)
         return float((calib["temp_termometro"] - pred).abs().mean())
 
     errores = []
@@ -84,21 +84,39 @@ def _error_blend_loo(calib: pd.DataFrame) -> float:
         offset_a = _offset(previos, "temp_pronostico_api")
         pred_m = calib["temp_predicha_modelo"].iloc[i] + offset_m
         pred_a = calib["temp_pronostico_api"].iloc[i] + offset_a
-        pred = (pred_m + pred_a) / 2
+        pred = (1 - config.PESO_API) * pred_m + config.PESO_API * pred_a
         errores.append(abs(calib["temp_termometro"].iloc[i] - pred))
     return float(np.mean(errores))
 
 
-def calcular_calibracion() -> dict:
+def calcular_calibracion(fecha_hora_actual=None) -> dict:
     calib = _cargar_calibracion()
     if calib.empty:
-        return {"offset_modelo": 0.0, "offset_api": 0.0, "error_estimado": None, "n_muestras": 0}
+        return {"offset_modelo": 0.0, "offset_api": 0.0, "error_estimado": None, "n_muestras": 0, "mismo_dia": None}
+
+    # Persistencia del sesgo: si ya hay lecturas anteriores del mismo día, el
+    # sesgo de la más reciente representa mejor las condiciones de hoy que el
+    # promedio de días con otro clima. Solo se usan lecturas ANTERIORES al
+    # momento que se predice.
+    if fecha_hora_actual is not None:
+        fechas = pd.to_datetime(calib["fecha_hora"])
+        hoy = calib[(fechas.dt.date == fecha_hora_actual.date()) & (fechas < fecha_hora_actual)]
+        if not hoy.empty:
+            ultima = hoy.iloc[[-1]]
+            return {
+                "offset_modelo": _offset(ultima, "temp_predicha_modelo"),
+                "offset_api": _offset(ultima, "temp_pronostico_api"),
+                "error_estimado": None,
+                "n_muestras": len(calib),
+                "mismo_dia": pd.to_datetime(ultima["fecha_hora"].iloc[0]),
+            }
 
     return {
         "offset_modelo": _offset(calib, "temp_predicha_modelo"),
         "offset_api": _offset(calib, "temp_pronostico_api"),
         "error_estimado": _error_blend_loo(calib),
         "n_muestras": len(calib),
+        "mismo_dia": None,
     }
 
 
@@ -126,10 +144,12 @@ def predecir_actual(registrar: float | None = None) -> float:
     pred_cruda_modelo = float(modelo.predict(fila[columnas])[0])
     temp_api = actual.get("temperature_2m")
 
-    calibracion = calcular_calibracion()
+    # Se usa la hora real del reloj: la API publica cada 15 min y puede ir
+    # atrasada respecto al momento en que se toma la lectura del termómetro.
+    calibracion = calcular_calibracion(pd.Timestamp.now())
     pred_modelo_corregida = pred_cruda_modelo + calibracion["offset_modelo"]
     pred_api_corregida = temp_api + calibracion["offset_api"]
-    pred_final = (pred_modelo_corregida + pred_api_corregida) / 2
+    pred_final = (1 - config.PESO_API) * pred_modelo_corregida + config.PESO_API * pred_api_corregida
 
     print(f"Hora local (CDMX): {fila['fecha_hora'].iloc[0]}")
     print(
@@ -143,12 +163,15 @@ def predecir_actual(registrar: float | None = None) -> float:
     if calibracion["n_muestras"] == 0:
         print("\nTodavía no hay pruebas de campo registradas (calibracion.csv vacío):")
         print("se usa el promedio simple de ambos candidatos, SIN corrección de sesgo.")
+    elif calibracion["mismo_dia"] is not None:
+        print(f"\nCorrección por persistencia: sesgo de la lectura más reciente de hoy ({calibracion['mismo_dia']:%H:%M}):")
+        print(f"  API corregida ({calibracion['offset_api']:+.2f} °C): {pred_api_corregida:.2f} °C")
     else:
         print(f"\nCalibración con {calibracion['n_muestras']} prueba(s) de campo:")
         print(f"  Modelo corregido ({calibracion['offset_modelo']:+.2f} °C): {pred_modelo_corregida:.2f} °C")
         print(f"  Error leave-one-out estimado de la mezcla: {calibracion['error_estimado']:.2f} °C")
 
-    print(f"\nPREDICCIÓN FINAL (promedio de ambos candidatos corregidos): {pred_final:.2f} °C")
+    print(f"\nPREDICCIÓN FINAL (mezcla ponderada de ambos candidatos corregidos): {pred_final:.2f} °C")
 
     if registrar is not None:
         registrar_prueba(fila["fecha_hora"].iloc[0], pred_cruda_modelo, temp_api, registrar)

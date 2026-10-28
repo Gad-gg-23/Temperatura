@@ -36,6 +36,10 @@ HORA_CLASE_FIN = 9  # exclusivo
 # Meses relevantes para la entrega (finales de octubre, clima ya más frío).
 MESES_ENTREGA = [9, 10, 11]
 
+# Peso del pronóstico de Open-Meteo en la mezcla final (el resto va al modelo).
+# 0.75 fue el mejor en validación walk-forward con los 20 registros de campo.
+PESO_API = 1.0
+
 DIR_BASE = Path(__file__).resolve().parent
 DIR_DATOS = DIR_BASE / "datos"
 ARCHIVO_HISTORICO = DIR_DATOS / "historico_escom.csv"

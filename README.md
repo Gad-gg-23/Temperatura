@@ -67,6 +67,15 @@ Esto guarda en `calibracion.csv` tanto la predicción del modelo como el pronós
 
 Mientras más pruebas se acumulen (idealmente en distintos días/condiciones, a la misma hora de la clase), más confiable será la corrección. Esto es exactamente lo planeado: "hacer pruebas para ir ajustando".
 
+## Ajustes del día de entrega (28 oct)
+
+Ese día amaneció despejado (29-31% de nubosidad), mientras que casi todos los días de calibración fueron nublados. El MLP, fuera de su rango de calibración, predijo muy bajo (≈9.9°C contra 13°C real). Se hicieron dos cambios:
+
+1. `PESO_API` en `config.py` (antes era una mezcla fija 50/50): con 1.0 la predicción final usa solo el pronóstico de Open-Meteo corregido. En la validación walk-forward, 0.75 dio el menor MAE (0.65°C); 1.0 se eligió ese día por las condiciones fuera de rango del MLP.
+2. **Persistencia del sesgo:** si ya hay lecturas de ese mismo día anteriores a la hora actual del reloj, la corrección usa el sesgo de la lectura más reciente en lugar del promedio histórico. Ese día la diferencia API-real fue creciendo con la mañana (+0.5°C a las 06:45, +1.1°C a las 07:30).
+
+Resultado: la entrega se aprobó con 8.
+
 ## Cómo ejecutar
 
 ```bash
